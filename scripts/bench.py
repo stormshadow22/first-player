@@ -35,6 +35,7 @@ async def bench(url: str, source: str | None, count: int, concurrency: int) -> d
     times = []
     errors = []
     async with httpx.AsyncClient(timeout=6) as client:
+        before = (await client.get(url.rstrip("/") + "/metrics")).json()
 
         async def one(ticket):
             async with sem:
@@ -50,6 +51,7 @@ async def bench(url: str, source: str | None, count: int, concurrency: int) -> d
                     errors.append(type(exc).__name__)
 
         await asyncio.gather(*(one(t) for t in tickets))
+        after = (await client.get(url.rstrip("/") + "/metrics")).json()
     return {
         "source": source or "synthetic infrastructure smoke (not validation data)",
         "requested": len(tickets),
@@ -59,8 +61,9 @@ async def bench(url: str, source: str | None, count: int, concurrency: int) -> d
         "p50_ms": percentile(times, 0.50),
         "p95_ms": percentile(times, 0.95),
         "p99_ms": percentile(times, 0.99),
-        "cost_per_ticket_usd": 0.0 if not source else None,
-        "cost_note": "Safe stubs use no LLM; live cost is exported by server to metrics.json",
+        "cost_per_ticket_usd": (after["total_cost_usd"] - before["total_cost_usd"])
+        / max(1, len(times)),
+        "cost_note": "Process metrics delta; benchmark requires an otherwise idle single worker",
         "passes_latency": len(times) == len(tickets) and percentile(times, 0.95) <= 5000,
     }
 

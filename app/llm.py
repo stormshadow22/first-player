@@ -14,7 +14,21 @@ import httpx
 from app.schemas import LLMResult
 
 deadline_var: ContextVar[float | None] = ContextVar("deadline", default=None)
-calls_var: ContextVar[int] = ContextVar("llm_calls", default=0)
+
+
+class CallBudget:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.used = False
+
+    def claim(self):
+        with self.lock:
+            if self.used:
+                raise RuntimeError("Only one LLM call is allowed per ticket")
+            self.used = True
+
+
+calls_var: ContextVar[CallBudget | None] = ContextVar("llm_calls", default=None)
 _client: httpx.AsyncClient | None = None
 
 
@@ -58,6 +72,7 @@ class Metrics:
             latencies = [t for _, t in self.calls]
             ticket_costs = [c for _, _, c in self.tickets]
             return {
+                "total_cost_usd": sum(costs),
                 "llm_calls": self.attempts,
                 "llm_successes": len(costs),
                 "cost_mean_usd": sum(costs) / max(1, len(costs)),
@@ -94,9 +109,11 @@ async def complete(system: str, user: str, max_tokens: int, timeout_s: float) ->
     budget = min(timeout_s, remaining_budget())
     if budget <= 0:
         raise TimeoutError("LLM budget exhausted")
-    if calls_var.get() >= 1:
-        raise RuntimeError("Only one LLM call is allowed per ticket")
-    calls_var.set(calls_var.get() + 1)
+    call_budget = calls_var.get()
+    if call_budget is None:
+        call_budget = CallBudget()
+        calls_var.set(call_budget)
+    call_budget.claim()
     if os.getenv("LLM_MOCK", "0") == "1":
         result = LLMResult(
             text="Обращение требует проверки сотрудником поддержки.",

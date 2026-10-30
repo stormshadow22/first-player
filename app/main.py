@@ -54,3 +54,8 @@ async def health():
 @app.post("/triage", response_model=TriageResponse)
 async def post_triage(req: TriageRequest) -> TriageResponse:
     return await triage(req)
+
+
+@app.get("/metrics")
+async def get_metrics():
+    return metrics.snapshot()

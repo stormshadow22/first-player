@@ -8,7 +8,8 @@ import time
 
 from app import classify, extract, generate, guard, normalize, rag
 from app.dedup import Deduplicator
-from app.llm import calls_var, deadline_var, metrics
+from app.fallback import fallback_text
+from app.llm import CallBudget, calls_var, deadline_var, metrics
 from app.schemas import (
     ClassResult,
     DraftReply,
@@ -31,11 +32,13 @@ async def invoke(fn, *args):
     return await value if inspect.isawaitable(value) else value
 
 
-async def triage(req: TriageRequest, *, dedup: Deduplicator | None = None) -> TriageResponse:
+async def triage(
+    req: TriageRequest, *, dedup: Deduplicator | None = None, dedup_enabled: bool | None = None
+) -> TriageResponse:
     started = time.monotonic()
     deadline = started + 4.5
     token = deadline_var.set(deadline - 0.10)
-    call_token = calls_var.set(0)
+    call_token = calls_var.set(CallBudget())
     reasons: list[str] = []
 
     async def step(name, fn, args, fallback, reserve=0.08):
@@ -66,7 +69,7 @@ async def triage(req: TriageRequest, *, dedup: Deduplicator | None = None) -> Tr
         facts = await step("extract", extract.extract_facts, (req, text), Extracted())
         cls = await step("classify", classify.classify, (req, text, lang), ClassResult())
         duplicate = False
-        if os.getenv("DEDUP_ENABLED", "0") == "1":
+        if dedup_enabled if dedup_enabled is not None else os.getenv("DEDUP_ENABLED", "0") == "1":
             duplicate = await step(
                 "dedup", (dedup or service_dedup).check, (req, text, cls.category), False
             )
@@ -76,7 +79,7 @@ async def triage(req: TriageRequest, *, dedup: Deduplicator | None = None) -> Tr
             examples = await step(
                 "similar_replies", rag.similar_replies, (text, lang, cls.category), []
             )
-        fallback = DraftResult(lang=lang, text="Обращение требует проверки сотрудником поддержки.")
+        fallback = DraftResult(lang=lang, text=fallback_text(lang))
         draft = await step(
             "generate_draft",
             generate.generate_draft,

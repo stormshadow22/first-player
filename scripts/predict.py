@@ -78,7 +78,7 @@ async def predict(source: str, output: str, concurrency: int = 8) -> dict:
                 async def worker():
                     while (item := await queue.get()) is not None:
                         ticket_id, req, duplicate = item
-                        result = await triage(req)
+                        result = await triage(req, dedup_enabled=False)
                         if duplicate:
                             result.is_spam_or_duplicate = True
                             result.needs_human = True

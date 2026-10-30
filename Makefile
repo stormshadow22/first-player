@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 .PHONY: install run test lint predict eval index train bench smoke
 install:
-	uv venv --python 3.11 .venv
+	@test -x .venv/bin/python || (uv python install 3.11 && uv venv --python 3.11 .venv)
 	uv pip sync --python $(PYTHON) requirements.lock
 run:
 	$(PYTHON) -m uvicorn app.main:app --host 0.0.0.0 --port 8000
