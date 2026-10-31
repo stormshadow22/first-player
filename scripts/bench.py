@@ -97,8 +97,8 @@ def main():
     result = asyncio.run(bench(args.url, args.input, args.count, args.concurrency))
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, indent=2, ensure_ascii=False))
-    print(json.dumps(result, ensure_ascii=False))
+    path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(json.dumps(result))
     if not result["passes_latency"]:
         raise SystemExit(1)
 

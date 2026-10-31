@@ -116,10 +116,10 @@ async def test_predict_bad_lines_and_mapping(tmp_path):
     }
     req = ticket_request(ticket)
     assert len(req.messages) == 1 and req.messages[0].attachments == 3
-    source.write_text(json.dumps(ticket) + "\nBROKEN\n")
+    source.write_text(json.dumps(ticket) + "\nBROKEN\n", encoding="utf-8")
     stats = await predict(str(source), str(dest), 2)
     assert stats == {"processed": 1, "invalid": 1}
-    row = json.loads(dest.read_text())
+    row = json.loads(dest.read_text(encoding="utf-8"))
     assert row.pop("ticket_id") == 12
     TriageResponse.model_validate(row)
 
@@ -216,7 +216,7 @@ async def test_batch_gzip_dedup(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DEDUP_ENABLED", "1")
     source, dest = tmp_path / "in.jsonl.gz", tmp_path / "out.jsonl"
-    with gzip.open(source, "wt") as f:
+    with gzip.open(source, "wt", encoding="utf-8") as f:
         for i in range(3):
             f.write(
                 json.dumps(
@@ -232,6 +232,6 @@ async def test_batch_gzip_dedup(monkeypatch, tmp_path):
             )
     await predict(str(source), str(dest), 2)
     rows = sorted(
-        (json.loads(line) for line in dest.read_text().splitlines()), key=lambda r: r["ticket_id"]
+        (json.loads(line) for line in dest.read_text(encoding="utf-8").splitlines()), key=lambda r: r["ticket_id"]
     )
     assert [r["is_spam_or_duplicate"] for r in rows] == [False, True, True]

@@ -59,6 +59,10 @@ docker compose up --build --wait
 доступны read-only, reports/raw сохраняется на хосте. Особенности корпоративного
 TLS-прокси описаны в docs/DEVELOPMENT.md.
 
+Если планируете запускать batch/acceptance на Linux-хосте одновременно с
+контейнером, заранее создайте каталоги от своего пользователя:
+`mkdir -p reports/raw data models`. Это сохраняет права записи для хостовых скриптов.
+
 ## Проверки и измерения
 
 ```powershell

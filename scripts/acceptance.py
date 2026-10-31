@@ -73,7 +73,7 @@ def main():
         "smoke": smoke, "benchmark": result,
     }
     (dest / "acceptance.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(json.dumps(report, indent=2))
     if not result["passes_latency"]:
         raise SystemExit(1)
 
