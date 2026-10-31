@@ -38,19 +38,25 @@ async def triage(
     started = time.monotonic()
     deadline = started + 4.5
     token = deadline_var.set(deadline - 0.10)
-    call_token = calls_var.set(CallBudget())
+    call_budget = CallBudget()
+    call_token = calls_var.set(call_budget)
     reasons: list[str] = []
 
     async def step(name, fn, args, fallback, reserve=0.08):
+        step_started = time.monotonic()
+        failed = False
         try:
             remaining = deadline - time.monotonic() - reserve
             if remaining <= 0:
                 raise TimeoutError()
             return await asyncio.wait_for(invoke(fn, *args), timeout=remaining)
         except Exception as exc:
+            failed = True
             logger.warning("Stage %s failed: %s", name, type(exc).__name__)
             reasons.append(f"{name}:{type(exc).__name__}")
             return fallback
+        finally:
+            metrics.record_stage(name, (time.monotonic() - step_started) * 1000, failed)
 
     try:
         # Bound model input and memory without treating reported/admin messages as player facts.
@@ -102,7 +108,7 @@ async def triage(
             reasons.append("unverified_citation")
             guarded = GuardResult(draft=fallback, reasons=["citation_rejected"])
         metrics.record_ticket(
-            not draft.llm_used, (time.monotonic() - started) * 1000, draft.cost_usd
+            not guarded.draft.llm_used, (time.monotonic() - started) * 1000, call_budget.cost_usd
         )
         return TriageResponse(
             lang=lang,
@@ -119,7 +125,7 @@ async def triage(
         )
     except Exception as exc:
         logger.exception("Unexpected pipeline failure")
-        metrics.record_ticket(True, (time.monotonic() - started) * 1000, 0)
+        metrics.record_ticket(True, (time.monotonic() - started) * 1000, call_budget.cost_usd)
         return TriageResponse(reasons=reasons + [f"pipeline:{type(exc).__name__}"])
     finally:
         deadline_var.reset(token)

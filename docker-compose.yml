@@ -1,14 +1,20 @@
 services:
   api:
-    build:
-      context: .
-      secrets:
-        - proxy_ca
+    build: .
     ports:
       - "8000:8000"
     environment:
-      LLM_MOCK: "1"
-      DEDUP_ENABLED: "0"
+      LLM_MOCK: ${LLM_MOCK:-1}
+      DEDUP_ENABLED: ${DEDUP_ENABLED:-0}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai_compatible}
+      LLM_MODEL: ${LLM_MODEL:-gpt-5.6-luna}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PRICE_IN_PER_MTOK: ${LLM_PRICE_IN_PER_MTOK:-}
+      LLM_PRICE_OUT_PER_MTOK: ${LLM_PRICE_OUT_PER_MTOK:-}
+      LLM_REASONING_EFFORT: ${LLM_REASONING_EFFORT:-none}
+      LLM_TOKEN_LIMIT_FIELD: ${LLM_TOKEN_LIMIT_FIELD:-max_completion_tokens}
+      LLM_PROMPT_CACHE: ${LLM_PROMPT_CACHE:-0}
     volumes:
       - ./reports/raw:/service/reports/raw
       - ./data:/service/data:ro
@@ -18,7 +24,3 @@ services:
       interval: 5s
       timeout: 2s
       retries: 10
-
-secrets:
-  proxy_ca:
-    file: ${SUPPORT_CA_BUNDLE:-/etc/ssl/certs/ca-certificates.crt}

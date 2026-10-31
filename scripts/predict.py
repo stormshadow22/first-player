@@ -5,14 +5,14 @@ import asyncio
 import gzip
 import json
 import logging
+import os
 from pathlib import Path
 
-import httpx
 from tqdm import tqdm
 
 from app.dedup import Deduplicator
-from app.llm import metrics, set_client
 from app.pipeline import triage
+from app.runtime import resources
 from app.schemas import TriageRequest
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,11 @@ async def predict(source: str, output: str, concurrency: int = 8) -> dict:
     stats = {"processed": 0, "invalid": 0}
     # Deterministic event-time duplicate decisions are made in input order before scheduling.
     dedup = Deduplicator(event_time=True)
-    import os
-
     dedup_enabled = os.getenv("DEDUP_ENABLED", "0") == "1"
     progress = tqdm(desc="tickets", unit="ticket")
     opener = gzip.open if source.endswith(".gz") else open
     Path(output).parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(timeout=4) as client:
-        set_client(client)
+    async with resources() as startup_errors:
         try:
             with (
                 opener(source, "rt", encoding="utf-8") as src,
@@ -65,10 +62,15 @@ async def predict(source: str, output: str, concurrency: int = 8) -> dict:
                             ticket = json.loads(line)
                             req = ticket_request(ticket)
                             duplicate = False
+                            dedup_error = False
                             if dedup_enabled:
-                                text = "\\n".join(m.text for m in req.messages)
-                                duplicate = dedup.check(req, text, "batch")
-                            await queue.put((ticket.get("ticket_id"), req, duplicate))
+                                text = "\n".join(m.text for m in req.messages)
+                                try:
+                                    duplicate = dedup.check(req, text, "batch")
+                                except ValueError:
+                                    dedup_error = True
+                                    logger.warning("Invalid/missing created_at on line %d; dedup skipped", line_no)
+                            await queue.put((ticket.get("ticket_id"), req, duplicate, dedup_error))
                         except (ValueError, TypeError, AttributeError, KeyError):
                             stats["invalid"] += 1
                             logger.warning("Invalid input line %d", line_no)
@@ -77,12 +79,20 @@ async def predict(source: str, output: str, concurrency: int = 8) -> dict:
 
                 async def worker():
                     while (item := await queue.get()) is not None:
-                        ticket_id, req, duplicate = item
+                        ticket_id, req, duplicate, dedup_error = item
                         result = await triage(req, dedup_enabled=False)
+                        if startup_errors:
+                            result.needs_human = True
+                            result.confidence = 0.0
+                            result.reasons.extend(f"startup:{error}" for error in startup_errors)
                         if duplicate:
                             result.is_spam_or_duplicate = True
                             result.needs_human = True
                             result.reasons.append("batch_duplicate")
+                        if dedup_error:
+                            result.needs_human = True
+                            result.confidence = 0.0
+                            result.reasons.append("batch_dedup:invalid_created_at")
                         row = {"ticket_id": ticket_id, **result.model_dump()}
                         async with lock:
                             dst.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -95,9 +105,7 @@ async def predict(source: str, output: str, concurrency: int = 8) -> dict:
                     for _ in range(concurrency):
                         group.create_task(worker())
         finally:
-            set_client(None)
             progress.close()
-            metrics.export()
     return stats
 
 

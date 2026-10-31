@@ -1,14 +1,20 @@
+ifeq ($(OS),Windows_NT)
+PYTHON ?= .venv/Scripts/python.exe
+BOOTSTRAP ?= py -3.11
+else
 PYTHON ?= .venv/bin/python
-.PHONY: install run test lint predict eval index train bench smoke
+BOOTSTRAP ?= python3.11
+endif
+.PHONY: install run test lint predict eval index train bench smoke acceptance
 install:
-	@test -x .venv/bin/python || (uv python install 3.11 && uv venv --python 3.11 .venv)
-	uv pip sync --python $(PYTHON) requirements.lock
+	$(BOOTSTRAP) -m venv .venv
+	$(PYTHON) -m pip install -r requirements.lock
 run:
 	$(PYTHON) -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 test:
 	$(PYTHON) -m pytest
 lint:
-	.venv/bin/ruff check .
+	$(PYTHON) -m ruff check .
 predict:
 	$(PYTHON) -m scripts.predict --input "$(IN)" --output "$(OUT)"
 eval:
@@ -21,3 +27,5 @@ bench:
 	$(PYTHON) -m scripts.bench
 smoke:
 	$(PYTHON) -m scripts.smoke
+acceptance:
+	$(PYTHON) -m scripts.acceptance

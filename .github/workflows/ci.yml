@@ -1,0 +1,55 @@
+name: Backend checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      LLM_MOCK: "1"
+      DEDUP_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock
+      - run: python -m ruff check .
+      - run: python -m pytest -q
+      - run: python -m scripts.acceptance
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-${{ matrix.os }}
+          path: |
+            reports/raw/acceptance.json
+            reports/raw/bench.json
+            reports/raw/http-metrics.json
+            reports/raw/service.log
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.lock
+      - run: docker compose up --build --wait
+      - run: python -m scripts.acceptance --url http://127.0.0.1:8000
+      - run: docker compose logs
+        if: always()
+      - run: docker compose down
+        if: always()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: acceptance-docker
+          path: |
+            reports/raw/acceptance.json
+            reports/raw/bench.json
+            reports/raw/http-metrics.json

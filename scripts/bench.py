@@ -52,6 +52,19 @@ async def bench(url: str, source: str | None, count: int, concurrency: int) -> d
 
         await asyncio.gather(*(one(t) for t in tickets))
         after = (await client.get(url.rstrip("/") + "/metrics")).json()
+    stages = {}
+    owners = {
+        "normalize": "B", "detect_lang": "B", "extract": "B", "classify": "B",
+        "retrieve_rules": "C", "similar_replies": "C", "all_rule_ids": "C",
+        "generate_draft": "C", "apply_guards": "D", "dedup": "A",
+    }
+    for name, stage in after.get("stages", {}).items():
+        previous = before.get("stages", {}).get(name, {})
+        calls = stage["calls"] - previous.get("calls", 0)
+        elapsed = stage["mean_ms"] * stage["calls"] - previous.get("mean_ms", 0) * previous.get("calls", 0)
+        if calls:
+            stages[name] = {"owner": owners.get(name, "A"), "calls": calls, "mean_ms": elapsed / calls}
+    slowest = max(stages, key=lambda name: stages[name]["mean_ms"], default=None)
     return {
         "source": source or "synthetic infrastructure smoke (not validation data)",
         "requested": len(tickets),
@@ -64,6 +77,11 @@ async def bench(url: str, source: str | None, count: int, concurrency: int) -> d
         "cost_per_ticket_usd": (after["total_cost_usd"] - before["total_cost_usd"])
         / max(1, len(times)),
         "cost_note": "Process metrics delta; benchmark requires an otherwise idle single worker",
+        "llm_calls": after["llm_calls"] - before["llm_calls"],
+        "llm_failures": after.get("llm_failures", 0) - before.get("llm_failures", 0),
+        "stages": stages,
+        "slowest_stage": slowest,
+        "action_if_slow": f"Contact participant {owners.get(slowest, 'A')}: investigate {slowest}" if slowest else None,
         "passes_latency": len(times) == len(tickets) and percentile(times, 0.95) <= 5000,
     }
 

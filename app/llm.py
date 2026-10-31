@@ -10,8 +10,11 @@ from contextvars import ContextVar
 from pathlib import Path
 
 import httpx
+from dotenv import load_dotenv
 
 from app.schemas import LLMResult
+
+load_dotenv()
 
 deadline_var: ContextVar[float | None] = ContextVar("deadline", default=None)
 
@@ -20,6 +23,7 @@ class CallBudget:
     def __init__(self):
         self.lock = threading.Lock()
         self.used = False
+        self.cost_usd = 0.0
 
     def claim(self):
         with self.lock:
@@ -57,6 +61,18 @@ class Metrics:
         self.calls: list[tuple[float, float]] = []
         self.tickets: list[tuple[bool, float, float]] = []
         self.attempts = 0
+        self.failures = 0
+        self.failed_latencies: list[float] = []
+        self.stages: dict[str, list[tuple[float, bool]]] = {}
+
+    def record_stage(self, name: str, latency_ms: float, failed: bool) -> None:
+        with self.lock:
+            self.stages.setdefault(name, []).append((latency_ms, failed))
+
+    def record_failure(self, latency_ms: float) -> None:
+        with self.lock:
+            self.failures += 1
+            self.failed_latencies.append(latency_ms)
 
     def record_call(self, result: LLMResult) -> None:
         with self.lock:
@@ -69,12 +85,14 @@ class Metrics:
     def snapshot(self) -> dict:
         with self.lock:
             costs = [c for c, _ in self.calls]
-            latencies = [t for _, t in self.calls]
+            latencies = [t for _, t in self.calls] + self.failed_latencies
             ticket_costs = [c for _, _, c in self.tickets]
             return {
                 "total_cost_usd": sum(costs),
                 "llm_calls": self.attempts,
                 "llm_successes": len(costs),
+                "llm_failures": self.failures,
+                "cost_note": "Successful responses only; timed-out/failed calls may still be billed by the provider",
                 "cost_mean_usd": sum(costs) / max(1, len(costs)),
                 "cost_p95_usd": percentile(costs, 0.95),
                 "latency_mean_ms": sum(latencies) / max(1, len(latencies)),
@@ -83,6 +101,15 @@ class Metrics:
                 "ticket_cost_mean_usd": sum(ticket_costs) / max(1, len(ticket_costs)),
                 "ticket_cost_p95_usd": percentile(ticket_costs, 0.95),
                 "fallback_fraction": sum(f for f, _, _ in self.tickets) / max(1, len(self.tickets)),
+                "stages": {
+                    name: {
+                        "calls": len(rows),
+                        "failures": sum(failed for _, failed in rows),
+                        "mean_ms": sum(t for t, _ in rows) / len(rows),
+                        "p95_ms": percentile([t for t, _ in rows], 0.95),
+                    }
+                    for name, rows in self.stages.items()
+                },
             }
 
     def export(self, path: str = "reports/raw/metrics.json") -> None:
@@ -152,21 +179,34 @@ async def complete(system: str, user: str, max_tokens: int, timeout_s: float) ->
         base = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
         url = base + "/chat/completions"
         headers = {"Authorization": f"Bearer {key}"}
+        token_field = os.getenv("LLM_TOKEN_LIMIT_FIELD", "max_tokens")
+        if token_field not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("Invalid LLM_TOKEN_LIMIT_FIELD")
         payload = {
             "model": model,
-            "max_tokens": max_tokens,
+            token_field: max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         }
+        if effort := os.getenv("LLM_REASONING_EFFORT"):
+            payload["reasoning_effort"] = effort
     else:
         raise ValueError("Unknown LLM_PROVIDER")
     if _client is None:
         raise RuntimeError("Initialize shared HTTP client with set_client()")
     with metrics.lock:
         metrics.attempts += 1
-    async with asyncio.timeout(budget):
-        response = await _client.post(url, headers=headers, json=payload, timeout=budget)
-        response.raise_for_status()
-        data = response.json()
+    # Recompute after configuration/serialization preparation so the ticket deadline wins.
+    budget = min(budget - (time.monotonic() - started), remaining_budget())
+    try:
+        if budget <= 0:
+            raise TimeoutError("LLM budget exhausted")
+        async with asyncio.timeout(budget):
+            response = await _client.post(url, headers=headers, json=payload, timeout=budget)
+            response.raise_for_status()
+            data = response.json()
+    except (Exception, asyncio.CancelledError):
+        metrics.record_failure((time.monotonic() - started) * 1000)
+        raise
     usage = data.get("usage", {})
     if provider == "anthropic":
         text = "".join(c.get("text", "") for c in data["content"] if c["type"] == "text")
@@ -186,4 +226,6 @@ async def complete(system: str, user: str, max_tokens: int, timeout_s: float) ->
         latency_ms=(time.monotonic() - started) * 1000,
     )
     metrics.record_call(result)
+    with call_budget.lock:
+        call_budget.cost_usd += result.cost_usd
     return result
